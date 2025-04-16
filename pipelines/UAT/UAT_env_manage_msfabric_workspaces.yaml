@@ -1,0 +1,18 @@
+name: ManageMSfabricWorkspaces_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- template: ./input_vars.yaml
+
+stages:
+- template: ../msfabric_manage_workspaces_template.yaml
+  parameters:
+    environment: ${{ variables.environment }}
+    azureServiceConnection: ${{ variables.azureServiceConnection }}
+    variableGroupName: ${{ variables.variableGroupName }}
+    ms_fabric_workspaces: ${{ variables.ms_fabric_workspaces }}
+    capacityName: ${{ variables.capacityName }}
