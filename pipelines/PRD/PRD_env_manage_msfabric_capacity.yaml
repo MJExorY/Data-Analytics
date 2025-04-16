@@ -1,0 +1,49 @@
+name: ManageMSfabricCapacity_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+schedules:
+  - cron: "00 17 * * 1-5"  # At 6 PM CET (5 PM UTC) from Monday to Friday
+    displayName: "Pause capacity"
+    branches:
+      include:
+        - main
+    always: true
+
+  # - cron: "00 5 * * 1-5"  # At 6 AM CET (5 AM UTC) from Monday to Friday
+  #   displayName: "Resume capacity"
+  #   branches:
+  #     include:
+  #       - main
+  #   always: true
+
+variables:
+  - template: ./input_vars.yaml
+
+stages:
+- stage: ManageFabricCapacity
+  jobs:
+  - job: PauseCapacity
+    condition: eq(variables['Build.CronSchedule.DisplayName'], 'Pause capacity')
+    steps:
+    - template: ../msfabric_capacity_management_template.yaml
+      parameters:
+        azureServiceConnection: ${{ variables.azureServiceConnection }}
+        subscriptionId: ${{ variables.subscriptionId }}
+        resourceGroupName: ${{ variables.resourceGroupName }}
+        capacityName: ${{ variables.capacityName }}
+        action: 'pause'
+
+  # - job: ResumeCapacity
+  #   condition: eq(variables['Build.CronSchedule.DisplayName'], 'Resume capacity')
+  #   steps:
+  #   - template: ../msfabric_capacity_management_template.yaml
+  #     parameters:
+  #       azureServiceConnection: ${{ variables.azureServiceConnection }}
+  #       subscriptionId: ${{ variables.subscriptionId }}
+  #       resourceGroupName: ${{ variables.resourceGroupName }}
+  #       capacityName: ${{ variables.capacityName }}
+  #       action: 'resume'
