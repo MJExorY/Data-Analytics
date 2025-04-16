@@ -1,0 +1,56 @@
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: environment
+    type: string
+  - name: ms_fabric_workspaces
+    type: string
+  - name: adf_name
+    type: string
+  - name: storage_account_name
+    type: string
+  - name: keyvault_name
+    type: string
+  - name: resourceGroupName
+    type: string
+  - name: service_principal_id
+    type: string
+  - name: adf_shir_adf_name
+    type: string
+  - name: adf_shir_resource_group
+    type: string
+  - name: subscriptionId
+    type: string
+
+
+steps:
+  - checkout: dahFabricWs
+    displayName: 'Checkout dahFabricWs repository'
+
+  - checkout: dahAdf
+    displayName: 'Checkout dahAdf repository'
+
+  - checkout: self
+    displayName: 'Checkout current repository'
+
+  - task: AzureCLI@2
+    displayName: 'Install and Configure post deployment requirements'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        sudo apt install jq -y
+
+  - task: AzureCLI@2
+    displayName: 'Azure ADF ARM Template deployment - configuration'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        source_folder_path="./dah_adf/gfcsneuwadf001d"
+        ./dah_devops/pipelines/scripts/azure_adf_post_deployment.sh --workspace "GFCS ${{ parameters.environment }} IDL" --env ${{ parameters.environment }} --adf-template-file "${source_folder_path}/ARMTemplateForFactory.json"\
+         --adf-name ${{ parameters.adf_name}} --keyvault-name ${{ parameters.keyvault_name }} --resource-group ${{ parameters.resourceGroupName }} \
+         --service-principal-id ${{ parameters.service_principal_id }} --adf-params-template "${source_folder_path}/ARMTemplateParametersForFactory.json" --storage-account-name ${{ parameters.storage_account_name }} \
+         --subscription-id ${{ parameters.subscriptionId }} --adf-shir-adf-name ${{ parameters.adf_shir_adf_name }} --adf-shir-resource-group ${{ parameters.adf_shir_resource_group }}

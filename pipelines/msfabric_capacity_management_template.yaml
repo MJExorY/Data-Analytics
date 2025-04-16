@@ -1,0 +1,51 @@
+parameters:
+  - name: subscriptionId
+    type: string
+  - name: resourceGroupName
+    type: string
+  - name: capacityName
+    type: string
+  - name: action
+    type: string  # 'pause' or 'resume'
+  - name: azureServiceConnection
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Manage MS Fabric Capacity'
+    inputs:
+      azureSubscription: '${{ parameters.azureServiceConnection }}'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        token=$(az account get-access-token --resource https://management.azure.com --query accessToken --output tsv)
+        management_url="https://management.azure.com"
+        if [ "${{ parameters.action }}" == "pause" ]; then
+          echo "Pausing capacity..."
+          response=$(az rest --method post \
+            --url "$management_url/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/${{ parameters.resourceGroupName }}/providers/Microsoft.Fabric/capacities/${{ parameters.capacityName }}/suspend?api-version=2023-11-01" \
+            --headers 'Content-Type=application/json' \
+            --headers "Authorization=Bearer $token")
+
+          if [ $? -ne 0 ]; then
+            echo "Failed to pause capacity: ${{ parameters.capacityName }}"
+            exit 1
+          fi
+
+          echo "Response: $response"
+          echo "Capacity paused successfully"
+        elif [ "${{ parameters.action }}" == "resume" ]; then
+          echo "Resuming capacity..."
+          response=$(az rest --method post \
+            --url "$management_url/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/${{ parameters.resourceGroupName }}/providers/Microsoft.Fabric/capacities/${{ parameters.capacityName }}/resume?api-version=2023-11-01" \
+            --headers 'Content-Type=application/json' \
+            --headers "Authorization=Bearer $token")
+
+          if [ $? -ne 0 ]; then
+            echo "Failed to resume capacity: ${{ parameters.capacityName }}"
+            exit 1
+          fi
+
+          echo "Response: $response"
+          echo "Capacity resumed successfully"
+        fi

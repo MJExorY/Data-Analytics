@@ -1,0 +1,121 @@
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: idl_notebook_name_to_run
+    type: string
+  - name: environment
+    type: string
+  - name: ms_fabric_workspaces
+    type: string
+  - name: tenant_id
+    type: string
+  - name: service_principal_id
+    type: string
+  - name: config_notebook_name
+    type: string
+  - name: dataverse_storage_container
+    type: string
+  - name: fabric_setup_admin_principal_id
+    type: string 
+
+steps:
+  - checkout: dahFabricWs
+    displayName: 'Checkout dahFabricWs repository'
+
+  - checkout: self
+    displayName: 'Checkout current repository'
+
+  - task: AzureCLI@2
+    displayName: 'Install and Configure post deployment requirements'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        pip install azure-storage-file-datalake azure-identity argparse 
+
+  - task: AzureCLI@2
+    displayName: 'Create new MS Fabric System connections'
+    condition: and(succeeded(), not(canceled()))
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        # create dataverse connection
+        ./dah_devops/pipelines/scripts/msfabric_create_connection.sh --env "${{ parameters.environment }}" --connection-name "GFCS_DAH_${{ parameters.environment }}_dataverse_sa002" --fabric-setup-admin-principal-key "$(Fabric-IDL-SP-Secret)" --fabric-setup-admin-principal-id "${{ parameters.fabric_setup_admin_principal_id }}" --tenant-id "${{ parameters.tenant_id }}" --dataverse-storage-container "${{ parameters.dataverse_storage_container }}" --action "create_dataverse_conn"
+
+  - task: AzureCLI@2
+    displayName: 'Create "${{ parameters.config_notebook_name }}" notebook'
+    condition: and(succeeded(), not(canceled()))
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        # Delete obsolete "${{ parameters.config_notebook_name }}" for "GFCS ${{ parameters.environment }} SDL SAP-S4"
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} SDL SAP-S4" --env "${{ parameters.environment }}" --nb-name "${{ parameters.config_notebook_name }}" --action "delete" --delete-nb-in-workspaces "${{ parameters.ms_fabric_workspaces }}"
+        # Create "${{ parameters.config_notebook_name }}" for "GFCS ${{ parameters.environment }} SDL SAP-S4"
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} SDL SAP-S4" --env "${{ parameters.environment }}" --nb-name "${{ parameters.config_notebook_name }}" --action "create"
+        # Create "${{ parameters.config_notebook_name }}" for "GFCS ${{ parameters.environment }} SDL CRM"
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} SDL CRM" --env "${{ parameters.environment }}" --nb-name "${{ parameters.config_notebook_name }}" --action "create"
+        # Create "${{ parameters.config_notebook_name }}" for "GFCS ${{ parameters.environment }} IDL"
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} IDL" --env "${{ parameters.environment }}" --nb-name "${{ parameters.config_notebook_name }}" --action "create"
+        # Create "${{ parameters.config_notebook_name }}" for "GFCS ${{ parameters.environment }} CDL OtC"
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} CDL OtC" --env "${{ parameters.environment }}" --nb-name "${{ parameters.config_notebook_name }}" --action "create"
+
+  - task: AzureCLI@2
+    displayName: 'Uploading CSV Files to OneLake for IDL workspace types'
+    condition: and(succeeded(), not(canceled()))
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        idl_source_folder_path="./dah_fabric_ws/gfcs_idl/configs"
+        cdl_source_folder_path="./dah_fabric_ws/gfcs_cdl_sales_pricing/configs"
+        silver_s4_sales_csv_files=($idl_source_folder_path/Data_Mapping_Silver/S4SALES/*.csv)
+        silver_crm_csv_files=($idl_source_folder_path/Data_Mapping_Silver/CRM/*.csv)
+        gold_s4_sales_csv_files=($idl_source_folder_path/Data_Mapping_Gold/S4SALES/*.csv)
+        cdl_otc_csv_files=($cdl_source_folder_path/inputs/pl_sales_pricing_dm_lh/*.csv)
+
+        echo "Deleting existing CSV files..."
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "delete" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Silver/S4SALES"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "delete" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Silver/CRM"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "delete" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Gold/S4SALES"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "delete" "GFCS ${{ parameters.environment }} CDL OtC" "pl_sales_pricing_dm_lh.Lakehouse/Files/input/"
+
+        echo "Uploading CSV files..."
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "upload" "${silver_s4_sales_csv_files[@]}" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Silver/S4SALES"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "upload" "${silver_crm_csv_files[@]}" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Silver/CRM"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "upload" "${gold_s4_sales_csv_files[@]}" "GFCS ${{ parameters.environment }} IDL" "system_lh.Lakehouse/Files/_config/Data_Mapping_Gold/S4SALES"
+
+        python3 ./dah_devops/pipelines/scripts/msfabric_manage_csv_files_for_lakehouse.py "upload" "${cdl_otc_csv_files[@]}" "GFCS ${{ parameters.environment }} CDL OtC" "pl_sales_pricing_dm_lh.Lakehouse/Files/input/"
+
+  - task: AzureCLI@2
+    displayName: 'Run IDL "${{ parameters.idl_notebook_name_to_run }}" notebook'
+    condition: and(succeeded(), not(canceled()))
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        ./dah_devops/pipelines/scripts/msfabric_manage_notebooks.sh --workspace "GFCS ${{ parameters.environment }} IDL" --env "${{ parameters.environment }}" --nb-name "${{ parameters.idl_notebook_name_to_run }}" --action "run"
+
+# TODO: lack of Microsof support for this REST API at the moment: https://gfps-portal.atlassian.net/browse/AGTRAN-16490
+  # - task: AzureCLI@2
+  #   displayName: 'Modify and Deploy SDL 100_S4_Sales_br_cpl.DataPipeline/pipeline-content.json'
+  #   condition: and(succeeded(), not(canceled()))
+  #   inputs:
+  #     azureSubscription: ${{ parameters.azureServiceConnection }}
+  #     scriptType: bash
+  #     scriptLocation: inlineScript
+  #     inlineScript: |
+  #       source_folder_path="./dah_fabric_ws/gfcs_sdl_s4_Sales/100_S4_Sales_br_cpl.DataPipeline/"
+  #       ./dah_devops/pipelines/scripts/msfabric_manage_data_pipelines.sh --workspace "GFCS ${{ parameters.environment }} IDL" --env "${{ parameters.environment }}" --data-payload "$(ls ${source_folder_path}/pipeline-content.json)"
+

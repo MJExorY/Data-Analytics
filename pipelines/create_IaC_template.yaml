@@ -1,0 +1,172 @@
+parameters:
+- name: resourceGroupName
+  type: string
+  default: ''
+
+- name: environment
+  type: string
+  default: ''
+
+- name: azureServiceConnection
+  type: string
+  default: ''
+
+- name: bicepParamFile
+  type: string
+  default: ''
+
+- name: bicepTemplateFile
+  type: string
+  default: ''
+
+- name: pipelineValidationApprovalPerson
+  type: string
+  default: ''
+
+- name: variableGroupName
+  type: string
+  default: ''
+
+- name: ms_fabric_workspaces
+  type: string
+  default: ''
+
+- name: capacityName
+  type: string
+  default: ''
+
+- name: subscriptionId
+  type: string
+  default: ''
+
+- name: keyvault_name
+  type: string
+  default: ''
+
+- name: service_principal_id
+  type: string
+  default: ''
+
+- name: adf_name
+  type: string
+  default: ''
+
+stages:
+- stage: Create_IaC_${{ parameters.environment }}
+  displayName: Create IaC
+  condition: and(not(failed()), not(canceled()))
+  variables:
+    - group: ${{ parameters.variableGroupName }}
+    - name: resourceGroupName
+      value: '${{ parameters.resourceGroupName }}'
+    - name: bicepParamFile
+      value: '${{ parameters.bicepParamFile }}'
+    - name: environment
+      value: ${{ parameters.environment }}
+    - name: bicepTemplateFile
+      value: '${{ parameters.bicepTemplateFile }}'
+  jobs:
+  - job: waitForValidation
+    displayName: Wait for external pipeline validation and approval
+    pool: server
+    timeoutInMinutes: 1440
+    steps:
+    - task: ManualValidation@0
+      condition: or(eq('${{ parameters.environment }}', 'UAT'), eq('${{ parameters.environment }}', 'PRD'))
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: |
+          ${{ parameters.pipelineValidationApprovalPerson }}
+        instructions: 'Please approve the pipeline for environment ${{ parameters.environment }} before continuing.'
+        onTimeout: 'resume'
+
+  - job: CreateIaC
+    displayName: Create IaC
+    dependsOn: waitForValidation
+    condition: and(not(failed()), not(canceled()))
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Install and configure IaC requirements'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        useGlobalConfig: false
+        inlineScript: |
+          echo "IaC deployment..."
+          az upgrade
+          az version
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64 && chmod +x ./bicep && sudo mv ./bicep /usr/local/bin/bicep
+          az bicep upgrade --debug
+          az bicep version
+          
+    - task: AzureCLI@2
+      displayName: 'Create Azure resources(IaC)'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        useGlobalConfig: false
+        inlineScript: |
+          echo "IaC deployment..."
+          
+          # Debugging variables
+          echo "Subscription ID: ${{ parameters.subscriptionId }}"
+          echo "Resource Group Name: ${{ parameters.resourceGroupName }}"
+          echo "Key Vault Name: ${{ parameters.keyvault_name }}"
+          echo "Service Principal ID: ${{ parameters.service_principal_id }}"
+          echo "ADF Name: ${{ parameters.adf_name }}"
+
+          # Get the ADF Managed Identity Object ID
+          adfDetails=$(az datafactory show \
+            --name "${{ parameters.adf_name }}" \
+            --resource-group "${{ parameters.resourceGroupName }}" \
+            --query "identity.principalId" \
+            --output tsv)
+
+          if [ -z "$adfDetails" ]; then
+            echo "Failed to retrieve ADF Managed Identity Object ID."
+            exit 1
+          fi
+
+          echo "ADF Managed Identity Object ID: $adfDetails"
+
+          # Define Key Vault Role Definition ID
+          keyvaultRoleDefinitionId="4633458b-17de-408a-b874-0445c86b69e6"
+
+          # Get the RBAC assignment ID
+          assignmentId=$(az role assignment list \
+            --scope "/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/${{ parameters.resourceGroupName }}/providers/Microsoft.KeyVault/vaults/${{ parameters.keyvault_name }}" \
+            --query "[?principalId=='$adfDetails' && roleDefinitionId=='/subscriptions/${{ parameters.subscriptionId }}/providers/Microsoft.Authorization/roleDefinitions/$keyvaultRoleDefinitionId'].id" \
+            -o tsv)
+
+          # Delete the RBAC assignment
+          if [ -n "$assignmentId" ]; then
+            echo "Deleting RBAC assignment with ID: $assignmentId"
+            az role assignment delete --ids "$assignmentId"
+            if [ $? -ne 0 ]; then
+              echo "Failed to delete RBAC assignment."
+              exit 1
+            fi
+          else
+            echo "No matching RBAC assignment found."
+          fi
+
+          # Deploy Bicep template
+          if [ -z "$(bicepTemplateFile)" ] || [ -z "$(bicepParamFile)" ]; then
+            echo "Bicep template file or parameter file is missing."
+            exit 1
+          fi
+
+          az deployment group create \
+            --resource-group "${{ parameters.resourceGroupName }}" \
+            --template-file "$(bicepTemplateFile)" \
+            --parameters "$(bicepParamFile)" \
+            --name "DeployPipelineTemplate_${{ parameters.environment }}" \
+            --parameters vmAdminUserPassKeyvault="$(VM-Admin-Password)" \
+                        vmAdminUserNameKeyvault="$(VM-Admin-UserName)"
+
+          if [ $? -ne 0 ]; then
+            echo "Deployment failed."
+            exit 1
+          fi 
