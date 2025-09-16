@@ -44,8 +44,8 @@ if [ -z "$environment" ] || [ -z "$capacityName" ] || [ ${#workspaces_list[@]} -
 fi
 
 echo "Environment name: $environment"
-echo "Workspace name: $workspace"
 echo "Capacity name: $capacityName"
+echo "Workspaces to process: ${workspaces_list[@]}"
 
 if [ -f "pipelines/scripts/modules/msfabric.sh" ]; then
   source pipelines/scripts/modules/msfabric.sh
@@ -60,6 +60,85 @@ else
   echo "Module file dah_devops/pipelines/scripts/modules/msfabric_security.sh not found!"
   exit 1
 fi
+
+# Function to get workspace ID by name
+get_workspace_id_by_name() {
+  local workspace_name="$1"
+  local list_url="$msfabric_api_url/v1/workspaces"
+  
+  workspace_id=$(az rest --method get \
+    --url "$list_url" \
+    --headers "Authorization=Bearer $token" \
+    | jq -r ".value[] | select(.displayName==\"$workspace_name\") | .id")
+  
+  echo "$workspace_id"
+}
+
+# Function to remove all existing role assignments for a workspace
+remove_all_role_assignments() {
+  local workspace_id="$1"
+  local workspace_name="$2"
+  
+  echo "Removing all existing role assignments for workspace: $workspace_name"
+  
+  # Get all current role assignments
+  local list_url="$msfabric_api_url/v1/workspaces/$workspace_id/roleAssignments"
+  
+  role_assignments=$(az rest --method get \
+    --url "$list_url" \
+    --headers "Authorization=Bearer $token" \
+    | jq -r '.value[]? | @base64')
+  
+  if [ -z "$role_assignments" ]; then
+    echo "No existing role assignments found for workspace: $workspace_name"
+    return 0
+  fi
+  
+  # Remove each role assignment
+  for assignment in $role_assignments; do
+    assignment_decoded=$(echo "$assignment" | base64 --decode)
+    principal_id=$(echo "$assignment_decoded" | jq -r '.principal.id')
+    principal_type=$(echo "$assignment_decoded" | jq -r '.principal.type')
+    
+    echo "Removing role assignment for principal: $principal_id (type: $principal_type)"
+    
+    delete_url="$msfabric_api_url/v1/workspaces/$workspace_id/roleAssignments/$principal_id"
+    
+    az rest --method delete \
+      --url "$delete_url" \
+      --headers "Authorization=Bearer $token"
+    
+    if [ $? -eq 0 ]; then
+      echo "Successfully removed role assignment for principal: $principal_id"
+    else
+      echo "Warning: Failed to remove role assignment for principal: $principal_id"
+    fi
+  done
+  
+  echo "Completed removing all role assignments for workspace: $workspace_name"
+}
+
+# Function to reset and reassign permissions
+reset_workspace_permissions() {
+  local workspace_id="$1"
+  local workspace_name="$2"
+  local workspace_type="$3"
+  
+  echo "=== Resetting permissions for workspace: $workspace_name ==="
+  
+  # Step 1: Remove all existing role assignments
+  remove_all_role_assignments "$workspace_id" "$workspace_name"
+  
+  # Step 2: Wait a moment to ensure removals are processed
+  echo "Waiting for permission removals to process..."
+  sleep 2
+  
+  # Step 3: Add new role assignments
+  echo "Adding new role assignments for workspace: $workspace_name"
+  add_role_assignment_for_new_workspace "$workspace_type" "$workspace_name" "$environment"
+  
+  echo "=== Permission reset completed for workspace: $workspace_name ==="
+}
 
 assign_workspace_to_capacity() {
   local workspace_id="$1"
@@ -135,11 +214,24 @@ check_all_existing_workspaces() {
   local workspace_type=$2
   local list_url="$msfabric_api_url/v1/workspaces"
   
-  # Nastavenie existing_workspace na výstup grep alebo prázdny reťazec
+  # Check if workspace exists
   existing_workspace=$(az rest --method get --url "$list_url" --headers "Authorization=Bearer $token" | jq -r '.value[].displayName' | grep -x "$workspace" || echo "")
 
   if [ "$existing_workspace" == "$workspace" ]; then
     echo "Workspace already exists: $workspace"
+    
+    # Get workspace ID for existing workspace
+    workspace_id=$(get_workspace_id_by_name "$workspace")
+    
+    if [ -n "$workspace_id" ]; then
+      echo "Found workspace ID: $workspace_id"
+      
+      # Reset permissions for existing workspace
+      reset_workspace_permissions "$workspace_id" "$workspace" "$workspace_type"
+    else
+      echo "Error: Could not find workspace ID for: $workspace"
+      exit 1
+    fi
   else
     echo "Creating new MS Fabric workspace: $workspace"
     create_new_workspace "$workspace" "$workspace_type"
@@ -167,12 +259,31 @@ create_new_workspace() {
   workspace_id=$(echo "$response" | jq -r '.id')
   assign_workspace_to_capacity "$workspace_id"
   configure_spark_for_workspace "$workspace_id" "$environment" "$workspace_display_name" "$workspace_type"
+  
+  # For new workspaces, we don't need to remove permissions first
+  echo "Adding role assignments for new workspace: $workspace_display_name"
   add_role_assignment_for_new_workspace "$workspace_type" "$workspace_display_name" "$environment"
 }
 
+# Main execution
+echo "Starting MS Fabric workspace configuration..."
+echo "========================================"
+
+# Get access token
 token=$(az account get-access-token --resource "$msfabric_api_url" --query accessToken --output tsv)
 
+if [ -z "$token" ]; then
+  echo "Error: Failed to get access token"
+  exit 1
+fi
+
+# Process each workspace
 for workspace in "${workspaces_list[@]}"; do
+  echo ""
+  echo "Processing workspace: $workspace"
+  echo "-----------------------------------"
+  
+  # Determine workspace type
   if echo "$workspace" | grep -q 'CDL'; then
     workspace_type="CDL"
   elif echo "$workspace" | grep -q 'IDL'; then
@@ -181,8 +292,18 @@ for workspace in "${workspaces_list[@]}"; do
     workspace_type="SDL"
   else
     workspace_type="UNKNOWN"
-    echo "Unknown workspace type for: $workspace"
+    echo "Error: Unknown workspace type for: $workspace"
     exit 1
   fi
+  
+  echo "Detected workspace type: $workspace_type"
+  
+  # Process workspace (create new or update existing)
   check_all_existing_workspaces "$workspace" "$workspace_type"
+  
+  echo "Completed processing workspace: $workspace"
 done
+
+echo ""
+echo "========================================"
+echo "All workspaces processed successfully!"

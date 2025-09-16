@@ -6,6 +6,10 @@ parameters:
 - name: environment
   type: string
   default: ''
+  values:
+  - DEV
+  - UAT
+  - PRD
 
 - name: azureServiceConnection
   type: string
@@ -53,7 +57,7 @@ parameters:
 
 stages:
 - stage: Create_IaC_${{ parameters.environment }}
-  displayName: Create IaC
+  displayName: 'Create IaC - ${{ parameters.environment }}'
   condition: and(not(failed()), not(canceled()))
   variables:
     - group: ${{ parameters.variableGroupName }}
@@ -65,9 +69,15 @@ stages:
       value: ${{ parameters.environment }}
     - name: bicepTemplateFile
       value: '${{ parameters.bicepTemplateFile }}'
+    # Key Vault Secrets User - This is a built-in Azure role ID (same across all subscriptions)
+    - name: keyvaultRoleDefinitionId
+      value: '4633458b-17de-408a-b874-0445c86b69e6'
+    - name: deploymentName
+      value: 'DeployPipelineTemplate_${{ parameters.environment }}_$(Build.BuildId)'
+  
   jobs:
   - job: waitForValidation
-    displayName: Wait for external pipeline validation and approval
+    displayName: 'Wait for external pipeline validation and approval'
     pool: server
     timeoutInMinutes: 1440
     steps:
@@ -81,92 +91,180 @@ stages:
         onTimeout: 'resume'
 
   - job: CreateIaC
-    displayName: Create IaC
+    displayName: 'Create IaC Resources'
     dependsOn: waitForValidation
     condition: and(not(failed()), not(canceled()))
+    pool:
+      vmImage: 'ubuntu-latest'
     steps:
     - task: AzureCLI@2
-      displayName: 'Install and configure IaC requirements'
+      displayName: 'Install Bicep CLI'
       inputs:
         azureSubscription: '${{ parameters.azureServiceConnection }}'
         scriptType: bash
         scriptLocation: inlineScript
         useGlobalConfig: false
+        failOnStandardError: true
         inlineScript: |
-          echo "IaC deployment..."
-          az upgrade
-          az version
-          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64 && chmod +x ./bicep && sudo mv ./bicep /usr/local/bin/bicep
-          az bicep upgrade --debug
+          set -euo pipefail
+          
+          echo "##[section]Installing Bicep CLI..."
+          
+          # Install latest Bicep version
+          BICEP_INSTALL_DIR="/usr/local/bin"
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x ./bicep
+          sudo mv ./bicep $BICEP_INSTALL_DIR/bicep
+          
+          # Verify installation
+          echo "##[section]Verifying Bicep installation..."
           az bicep version
           
     - task: AzureCLI@2
-      displayName: 'Create Azure resources(IaC)'
+      displayName: 'Validate Bicep Template'
       inputs:
         azureSubscription: '${{ parameters.azureServiceConnection }}'
         scriptType: bash
         scriptLocation: inlineScript
         useGlobalConfig: false
+        failOnStandardError: true
         inlineScript: |
-          echo "IaC deployment..."
+          set -euo pipefail
           
-          # Debugging variables
-          echo "Subscription ID: ${{ parameters.subscriptionId }}"
-          echo "Resource Group Name: ${{ parameters.resourceGroupName }}"
-          echo "Key Vault Name: ${{ parameters.keyvault_name }}"
-          echo "Service Principal ID: ${{ parameters.service_principal_id }}"
-          echo "ADF Name: ${{ parameters.adf_name }}"
-
-          # Get the ADF Managed Identity Object ID
-          adfDetails=$(az datafactory show \
+          echo "##[section]Validating Bicep template..."
+          
+          # Validate template syntax
+          az bicep build --file "$(bicepTemplateFile)"
+          
+          # Validate deployment
+          az deployment group validate \
+            --resource-group "${{ parameters.resourceGroupName }}" \
+            --template-file "$(bicepTemplateFile)" \
+            --parameters "$(bicepParamFile)" \
+            --parameters vmAdminUserPassKeyvault="$(VM-Admin-Password)" \
+                        vmAdminUserNameKeyvault="$(VM-Admin-UserName)"
+          
+          echo "##[section]Template validation completed successfully"
+          
+    - task: AzureCLI@2
+      displayName: 'Manage ADF Key Vault Access'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        useGlobalConfig: false
+        failOnStandardError: true
+        inlineScript: |
+          set -euo pipefail
+          
+          echo "##[section]Managing ADF Key Vault access..."
+          
+          # Retrieve ADF Managed Identity
+          echo "##[command]Retrieving ADF Managed Identity for: ${{ parameters.adf_name }}"
+          adfPrincipalId=$(az datafactory show \
             --name "${{ parameters.adf_name }}" \
             --resource-group "${{ parameters.resourceGroupName }}" \
             --query "identity.principalId" \
             --output tsv)
-
-          if [ -z "$adfDetails" ]; then
-            echo "Failed to retrieve ADF Managed Identity Object ID."
+          
+          if [ -z "$adfPrincipalId" ]; then
+            echo "##[error]Failed to retrieve ADF Managed Identity Object ID"
             exit 1
           fi
-
-          echo "ADF Managed Identity Object ID: $adfDetails"
-
-          # Define Key Vault Role Definition ID
-          keyvaultRoleDefinitionId="4633458b-17de-408a-b874-0445c86b69e6"
-
-          # Get the RBAC assignment ID
+          
+          echo "##[section]ADF Managed Identity Object ID: $adfPrincipalId"
+          
+          # Define Key Vault scope
+          keyvaultScope="/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/${{ parameters.resourceGroupName }}/providers/Microsoft.KeyVault/vaults/${{ parameters.keyvault_name }}"
+          roleDefinitionId="/subscriptions/${{ parameters.subscriptionId }}/providers/Microsoft.Authorization/roleDefinitions/$(keyvaultRoleDefinitionId)"
+          
+          # Check for existing RBAC assignment
+          echo "##[command]Checking for existing RBAC assignment..."
           assignmentId=$(az role assignment list \
-            --scope "/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/${{ parameters.resourceGroupName }}/providers/Microsoft.KeyVault/vaults/${{ parameters.keyvault_name }}" \
-            --query "[?principalId=='$adfDetails' && roleDefinitionId=='/subscriptions/${{ parameters.subscriptionId }}/providers/Microsoft.Authorization/roleDefinitions/$keyvaultRoleDefinitionId'].id" \
-            -o tsv)
-
-          # Delete the RBAC assignment
+            --scope "$keyvaultScope" \
+            --query "[?principalId=='$adfPrincipalId' && roleDefinitionId=='$roleDefinitionId'].id" \
+            --output tsv)
+          
+          # Remove existing assignment if found
           if [ -n "$assignmentId" ]; then
-            echo "Deleting RBAC assignment with ID: $assignmentId"
+            echo "##[warning]Found existing RBAC assignment: $assignmentId"
+            echo "##[command]Removing existing RBAC assignment..."
             az role assignment delete --ids "$assignmentId"
-            if [ $? -ne 0 ]; then
-              echo "Failed to delete RBAC assignment."
-              exit 1
-            fi
+            echo "##[section]RBAC assignment removed successfully"
           else
-            echo "No matching RBAC assignment found."
+            echo "##[section]No existing RBAC assignment found"
           fi
-
-          # Deploy Bicep template
-          if [ -z "$(bicepTemplateFile)" ] || [ -z "$(bicepParamFile)" ]; then
-            echo "Bicep template file or parameter file is missing."
+          
+    - task: AzureCLI@2
+      displayName: 'Deploy Bicep Template'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        useGlobalConfig: false
+        failOnStandardError: true
+        inlineScript: |
+          set -euo pipefail
+          
+          echo "##[section]Starting Bicep deployment..."
+          echo "##[group]Deployment Parameters"
+          echo "Resource Group: ${{ parameters.resourceGroupName }}"
+          echo "Template File: $(bicepTemplateFile)"
+          echo "Parameter File: $(bicepParamFile)"
+          echo "Deployment Name: $(deploymentName)"
+          echo "##[endgroup]"
+          
+          # Validate required files exist
+          if [ ! -f "$(bicepTemplateFile)" ]; then
+            echo "##[error]Bicep template file not found: $(bicepTemplateFile)"
             exit 1
           fi
-
+          
+          if [ ! -f "$(bicepParamFile)" ]; then
+            echo "##[error]Bicep parameter file not found: $(bicepParamFile)"
+            exit 1
+          fi
+          
+          # Deploy Bicep template
+          echo "##[command]Deploying Bicep template..."
           az deployment group create \
             --resource-group "${{ parameters.resourceGroupName }}" \
             --template-file "$(bicepTemplateFile)" \
             --parameters "$(bicepParamFile)" \
-            --name "DeployPipelineTemplate_${{ parameters.environment }}" \
+            --name "$(deploymentName)" \
             --parameters vmAdminUserPassKeyvault="$(VM-Admin-Password)" \
-                        vmAdminUserNameKeyvault="$(VM-Admin-UserName)"
-
-          if [ $? -ne 0 ]; then
-            echo "Deployment failed."
-            exit 1
-          fi 
+                        vmAdminUserNameKeyvault="$(VM-Admin-UserName)" \
+            --output table
+          
+          echo "##[section]Deployment completed successfully"
+          
+    - task: AzureCLI@2
+      displayName: 'Export Deployment Outputs'
+      condition: succeeded()
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        useGlobalConfig: false
+        failOnStandardError: true
+        inlineScript: |
+          set -euo pipefail
+          
+          echo "##[section]Exporting deployment outputs..."
+          
+          # Get deployment outputs
+          outputs=$(az deployment group show \
+            --resource-group "${{ parameters.resourceGroupName }}" \
+            --name "$(deploymentName)" \
+            --query "properties.outputs" \
+            --output json)
+          
+          if [ "$outputs" != "null" ] && [ "$outputs" != "{}" ]; then
+            echo "##[section]Deployment Outputs:"
+            echo "$outputs" | jq .
+            
+            # Export outputs as pipeline variables for downstream jobs
+            echo "$outputs" | jq -r 'to_entries[] | "##vso[task.setvariable variable=\(.key);isOutput=true]\(.value.value)"'
+          else
+            echo "##[section]No deployment outputs found"
+          fi

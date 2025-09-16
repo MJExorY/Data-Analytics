@@ -1,0 +1,83 @@
+parameters:
+  - name: environment
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: ms_fabric_workspaces
+    type: string
+
+steps:
+  # Download artifacts
+  - task: DownloadBuildArtifacts@1
+    displayName: 'Download Warehouse DACPACs'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      pipeline: 'Build_Warehouse_DACPACs'
+      buildVersionToDownload: 'latest'
+      artifactName: 'warehouse_dacpacs'
+      downloadPath: '$(Pipeline.Workspace)'
+
+  # FIX: Parse einzelne Workspaces aus der Liste
+  - task: Bash@3
+    displayName: 'Parse and Deploy Warehouses'
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -e
+        
+        # Parse workspace list
+        IFS=',' read -ra WORKSPACES <<< "${{ parameters.ms_fabric_workspaces }}"
+        
+        # Find specific workspaces
+        for ws in "${WORKSPACES[@]}"; do
+          # Trim whitespace
+          ws=$(echo "$ws" | xargs)
+          
+          if [[ "$ws" == *"IDL"* ]]; then
+            echo "##vso[task.setvariable variable=IDL_WORKSPACE]$ws"
+            echo "Found IDL: $ws"
+          elif [[ "$ws" == *"CDL OtC"* ]]; then
+            echo "##vso[task.setvariable variable=CDL_WORKSPACE]$ws"
+            echo "Found CDL: $ws"
+          fi
+        done
+
+  # FIX: Angepasster Aufruf für einzelne Workspaces
+  - task: AzureCLI@2
+    displayName: 'Deploy system_wh to IDL'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        # Da Ihr Template mehrere Workspaces erwartet, rufen wir es direkt auf
+        IFS=',' read -ra ms_fabric_workspaces <<< "$(IDL_WORKSPACE)"
+        
+        for workspace in "${ms_fabric_workspaces[@]}"; do
+          echo "Deploying system_wh to: $workspace"
+          
+          # Direkt sqlpackage nutzen wie in Ihrem Template
+          pipelines/scripts/msfabric_manage_dacpac.sh \
+            --dacpac-file-path "$(Pipeline.Workspace)/warehouse_dacpacs/IDL/system_wh.dacpac" \
+            --workspace "$workspace" \
+            --dbac-action "publish"
+        done
+
+  - task: AzureCLI@2
+    displayName: 'Deploy pl_sales_pricing_dm_wh to CDL'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        IFS=',' read -ra ms_fabric_workspaces <<< "$(CDL_WORKSPACE)"
+        
+        for workspace in "${ms_fabric_workspaces[@]}"; do
+          echo "Deploying pl_sales_pricing_dm_wh to: $workspace"
+          
+          pipelines/scripts/msfabric_manage_dacpac.sh \
+            --dacpac-file-path "$(Pipeline.Workspace)/warehouse_dacpacs/CDL/pl_sales_pricing_dm_wh.dacpac" \
+            --workspace "$workspace" \
+            --dbac-action "publish"
+        done

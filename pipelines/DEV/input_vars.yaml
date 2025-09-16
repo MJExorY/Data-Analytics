@@ -1,0 +1,10 @@
+variables:
+  resourceGroupName: 'GFCS-P-EUW-RG-10093256-DAH-D'
+  # bicepParamFile: './infrastructure/parameters/DEV_parameters.bicepparam'
+  azureServiceConnection: 'GFCS_DAH_Azure_IaC_SC_DEV'
+  environment: 'DEV'
+  # bicepTemplateFile: './infrastructure/main.bicep'
+  # variableGroupName: 'GFCS_DAH_DEV_variable_group'
+  # ms_fabric_workspaces: 'GFCS DEV CDL Sales-Pricing,GFCS DEV IDL,GFCS DEV SDL SAP-S4'
+  subscriptionId: 'cf329f3a-318f-45e5-9130-7a2a40d8cb6f'
+  capacityName: 'gfcsneuwfc001'

@@ -16,11 +16,11 @@ variables:
   config_notebook_name: "config"
   adf_name: "gfcspeuwadf001t"
   keyvault_name: "GFCSKV0002T"
-  storage_account_name: ""
+  storage_account_name: "gfcsneuwsa001p"
   service_principal_id: "005610c7-9838-4fc3-8bdf-c3dbd5f71e3c"
   tenant_id: "d0f5c1a2-e9a8-44ff-a1cc-b094c39a84d8"
   adf_shir_resource_group: 'GFCS-P-EUW-RG-10093255-DAH-P'
   adf_shir_adf_name: 'gfcspeuwadf001'
-  dataverse_storage_container: 'gfcsneuwsa002d'  # TODO: Verify storage container name
+  dataverse_storage_container: 'gfcsneuwsa002p'  # TODO: Verify storage container name
   fabric_setup_admin_principal_id: '9e83ea6f-df1b-4cc0-b8fe-9387961866f7'
   devops_admin_principal_id: '0f5f7f09-655d-4080-899a-b0ba6e460af8'
