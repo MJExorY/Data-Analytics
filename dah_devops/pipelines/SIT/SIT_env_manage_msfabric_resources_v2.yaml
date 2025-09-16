@@ -1,0 +1,33 @@
+name: ManageMSfabricResources_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+##################################
+########### WORK IN PROGRESS....
+##################################
+
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# resources:
+#   repositories:
+#     - repository: dahFabricWs
+#       type: git
+#       name: DAH/dah_fabric_ws
+
+variables:
+  - template: ./input_vars.yaml
+
+stages:
+  - stage: ManageMSFrabricResources
+    jobs:
+      - job: ManageMSFrabricResources
+        steps:
+          - template: ../msfabric_manage_resources_template_v2_WIP.yaml
+            parameters:
+              azureServiceConnection: ${{ variables.azureServiceConnection }}
+              ms_fabric_workspaces: ${{ variables.ms_fabric_workspaces }}
+              env_source_stage: ${{ variables.env_source_stage }}
+              env_target_stage: ${{ variables.env_target_stage }}
+              workspace_types: ${{ variables.workspace_types }}

@@ -1,0 +1,27 @@
+name: PublishDACPACfile_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+resources:
+  pipelines:
+    - pipeline: createDacpacPipeline
+      source: 'GFCS_DAH_msfabric_create_dacpac_SIT_env'
+      trigger: none
+
+variables:
+  - template: ./input_vars.yaml
+
+stages:
+  - stage: PublishDacpac
+    jobs:
+      - job: PublishDacpac
+        steps:
+          - template: ../msfabric_manage_dacpac_template.yaml
+            parameters:
+              azureServiceConnection: ${{ variables.azureServiceConnection }}
+              dbac_file_path: ${{ variables.dbac_file_path }}
+              ms_fabric_workspaces: ${{ variables.ms_fabric_workspaces }}
+              dbac_action: "publish"

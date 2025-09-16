@@ -1,0 +1,83 @@
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: dbac_file_path
+    type: string
+  - name: ms_fabric_workspaces
+    type: string
+  - name: dbac_action
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Install and Configure requirements'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Installing sqlpackage..."
+        wget https://aka.ms/sqlpackage-linux -O sqlpackage.zip
+        unzip sqlpackage.zip -d sqlpackage
+        chmod +x ./sqlpackage/sqlpackage
+        sudo mkdir -p /opt/sqlpackage
+        sudo cp ./sqlpackage/sqlpackage /opt/sqlpackage/
+        sudo ln -s /opt/sqlpackage/sqlpackage /usr/local/bin/sqlpackage
+        echo "sqlpackage installed successfully."
+
+  - checkout: self
+    persistCredentials: true
+
+  - ${{ if eq(parameters.dbac_action, 'create') }}:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          IFS=',' read -ra ms_fabric_workspaces <<< "${{ parameters.ms_fabric_workspaces }}"
+          # If the array is empty after splitting, add the single item manually
+          if [ ${#ms_fabric_workspaces[@]} -eq 1 ] && [ -z "${ms_fabric_workspaces[0]}" ]; then
+            ms_fabric_workspaces=("${{ parameters.ms_fabric_workspaces }}")
+          fi
+         
+          for workspace in "${ms_fabric_workspaces[@]}"; do
+            echo "Creating DACPAC file for workspace: $workspace..."
+            output_dir="$(Build.SourcesDirectory)/output"
+            mkdir -p "$output_dir"
+            pipelines/scripts/msfabric_manage_dacpac.sh --dacpac-file-path "$workspace"_"${{ parameters.dbac_file_path }}" --workspace "$workspace" --dbac-action "${{ parameters.dbac_action }}"
+            cp "$workspace"_"${{ parameters.dbac_file_path }}" "$output_dir" -rf
+          done
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)/output'
+        ArtifactName: 'dacpacArtifact'
+
+  - ${{ if eq(parameters.dbac_action, 'publish') }}:
+    - download: createDacpacPipeline
+      artifact: dacpacArtifact
+
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          IFS=',' read -ra ms_fabric_workspaces <<< "${{ parameters.ms_fabric_workspaces }}"
+          # If the array is empty after splitting, add the single item manually
+          if [ ${#ms_fabric_workspaces[@]} -eq 0 ]; then
+            ms_fabric_workspaces=("${{ parameters.ms_fabric_workspaces }}")
+          fi
+          
+          for workspace in "${ms_fabric_workspaces[@]}"; do
+            echo "Publishing DACPAC file for workspace: $workspace..."
+            find_output=$(find $(Pipeline.Workspace)/createDacpacPipeline/dacpacArtifact/ -name "$workspace"_"${{ parameters.dbac_file_path }}" -print -quit)
+            dacpac_file="$find_output"
+            if [ -z "$dacpac_file" ]; then
+              echo "DACPAC file not found!"
+              exit 1
+            fi
+            echo "DACPAC file path: $dacpac_file"
+            pipelines/scripts/msfabric_manage_dacpac.sh --dacpac-file-path "$dacpac_file" --workspace "$workspace" --dbac-action "${{ parameters.dbac_action }}"
+          done

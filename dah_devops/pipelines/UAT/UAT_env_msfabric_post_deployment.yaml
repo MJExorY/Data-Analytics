@@ -1,0 +1,54 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+resources:
+  repositories:
+    - repository: dahFabricWs
+      type: git
+      name: DAH/dah_fabric_ws
+
+    - repository: dahAdf
+      type: git
+      name: DAH/dah_adf
+      ref: refs/heads/adf_publish
+
+variables:
+  - template: ./input_vars.yaml
+  - group: ${{ variables.variableGroupName }}
+
+stages:
+  - stage: MSFabricPostDeployment
+    jobs:
+      - job: MSFabricPostDeployment
+        steps:
+          - template: ../msfabric_post_deployment_template.yaml
+            parameters:
+              azureServiceConnection: ${{ variables.azureServiceConnection }}
+              idl_notebook_name_to_run: ${{ variables.idl_notebook_name_to_run }}
+              environment: ${{ variables.environment }}
+              ms_fabric_workspaces: ${{ variables.ms_fabric_workspaces }}
+              tenant_id: ${{ variables.tenant_id }}
+              service_principal_id: ${{ variables.service_principal_id }}
+              config_notebook_name: ${{ variables.config_notebook_name }}
+              dataverse_storage_container: ${{ variables.dataverse_storage_container }}
+              fabric_setup_admin_principal_id: ${{ variables.fabric_setup_admin_principal_id }}
+  - stage: AzureADFpostDeployment
+    dependsOn: MSFabricPostDeployment
+    jobs:
+      - job: AzureADFpostDeployment
+        steps:
+          - template: ../azure_adf_post_deployment_template.yaml
+            parameters:
+              azureServiceConnection: ${{ variables.azureServiceConnection }}
+              environment: ${{ variables.environment }}
+              ms_fabric_workspaces: ${{ variables.ms_fabric_workspaces }}
+              adf_name: ${{ variables.adf_name }}
+              keyvault_name: ${{ variables.keyvault_name }}
+              storage_account_name: ${{ variables.storage_account_name }}
+              resourceGroupName: ${{ variables.resourceGroupName }}
+              service_principal_id: ${{ variables.service_principal_id }}
+              adf_shir_adf_name: ${{ variables.adf_shir_adf_name }}
+              adf_shir_resource_group: ${{ variables.adf_shir_resource_group }}
+              subscriptionId: ${{ variables.subscriptionId }}

@@ -1,0 +1,22 @@
+name: CreateDACPACfile_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - template: ./input_vars.yaml
+
+stages:
+  - stage: CreateDacpacFile
+    jobs:
+      - job: CreateDacpacFile
+        steps:
+          - template: ../msfabric_manage_dacpac_template.yaml
+            parameters:
+              azureServiceConnection: ${{ variables.azureServiceConnection }}
+              dbac_file_path: ${{ variables.dbac_file_path }}
+              environment: ${{ variables.environment }}
+              workspace_types: ${{ variables.workspace_types }}
+              dbac_action: "create"

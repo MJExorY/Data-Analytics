@@ -1,0 +1,31 @@
+#######################
+####### WORK IN PROGRESS...
+#######################
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: ms_fabric_workspaces
+    type: string
+  - name: env_source_stage
+    type: string
+  - name: env_target_stage
+    type: string
+  - name: workspace_types
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        IFS=',' read -r -a workspaces <<< "${{ parameters.ms_fabric_workspaces }}"
+        for workspace in "${workspaces[@]}"; do
+          nb_payload=$(cat some_file.py)
+          nb_name="notebook_$(date +%s)"
+          # ./pipelines/scripts/msfabric_manage_resources.sh "$workspace" "$nb_payload"
+          ./pipelines/scripts/msfabric_manage_resources.sh "$workspace"
+        done
+
